@@ -1,0 +1,16 @@
+{
+  "bwrap": "~/miniconda3/envs/sandbox/bin/bwrap",
+  "python": "/usr/bin/python3",
+  "real_bin_dir": "/usr/bin",
+  "spool": "~/.local/state/agent-slurm",
+  "socket_dir": "/dev/shm",
+  "shared_writable": ["/resnick/scratch/btyeh/claude"],
+  "env_dir": "/resnick/scratch/btyeh/claude/confine-env",
+  "hide": [
+    "~/.ssh",
+    "~/.claude",
+    "~/.local/share/jupyter",
+    "~/.vscode-server",
+    "/run/user/{uid}"
+  ]
+}
