@@ -135,7 +135,9 @@ For a long pipeline, submit the Snakemake driver itself as a job (`confine sbatc
 - **Reading and network:** confined code can read every file that isn't hidden and has unrestricted network access (jobs need it), so it could send data elsewhere. Claude's own sandbox restricts network; `confine` does not.
 - **Your own runs:** code the agent changes in the project (Snakefile, scripts, conda environments in `.snakemake/conda`) runs unconfined when *you* run the pipeline yourself.
 - **Signals:** confined code can send signals to your other processes (it can stop them, not escape through them).
-- **Upgrades:** after a SLURM or Snakemake plugin upgrade, a new option may be refused. Submissions then fail with `agent-slurm: … unknown option`; add the option to `src/agent_slurm/options.py` and re-install.
+- **Upgrades:** after a SLURM or Snakemake plugin upgrade, a new option may be refused. Submissions then fail with `agent-slurm: … unknown option`; add the option to `src/agent_slurm/options.py` and re-install. Run `./tests/run.sh unit` after a SLURM upgrade: it checks the option tables against the installed man pages and flags options SLURM no longer documents or whose argument changed.
+- **Other user namespaces:** `confine` treats any user namespace as an existing confinement and runs the command directly, because bwrap can't start there. Inside a container that uses one (e.g. unprivileged Apptainer), the command would run unconfined; don't approve `confine` behind such a wrapper.
+- **Nested repositories:** `.git/hooks` and `.git/config` are read-only only at the top of each writable folder. In a nested repository or submodule, a hook written by the agent runs when you next commit there.
 - **`scancel` coverage:** jobs that `srun` creates outside an allocation can't be cancelled through `confine scancel` (stop the `srun` instead).
 - **The approval prompt is the gate for `confine` itself.**
 - Kernel bugs are out of scope.
@@ -148,7 +150,7 @@ For a long pipeline, submit the Snakemake driver itself as a job (`confine sbatc
 ./tests/run.sh slurm    # small real jobs and a Snakemake run on the cluster
 ```
 
-The local tests reproduce each escape route above as an attack that must fail. The SLURM tests run one-off, nested and `srun` jobs, check `scancel` ownership, and run a two-rule Snakemake workflow with the SLURM executor, with and without `--slurm-pass-command-as-script`. Test files go to `/resnick/scratch/btyeh/playground/slurm_sandbox/pytest/`.
+The unit tests include a check of the option tables against the installed man pages of `sbatch`, `srun`, `scancel`, `scontrol` and `sacctmgr`. The local tests reproduce each escape route above as an attack that must fail. The SLURM tests run one-off, nested and `srun` jobs, check `scancel` ownership, and run a two-rule Snakemake workflow with the SLURM executor, with and without `--slurm-pass-command-as-script`. Test files go to `/resnick/scratch/btyeh/playground/slurm_sandbox/pytest/`.
 
 ## Files
 
@@ -165,6 +167,7 @@ The local tests reproduce each escape route above as an attack that must fail. T
 | `src/agent_slurm/config.json` | Installation settings |
 | `install.sh` | Installs read-only into `~/bin` |
 | `tests/` | Tests; `tests/fake_slurm/fake.py` stands in for SLURM in the local tests |
+| `walkthrough.md` | Step-by-step walkthrough of the code, with Q&A and possible extensions |
 
 ## Alternatives considered
 
