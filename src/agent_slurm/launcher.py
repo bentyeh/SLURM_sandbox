@@ -27,12 +27,10 @@ def warn(message):
 
 def already_confined():
     """True in a non-initial user namespace (inside confine, or inside Claude's own sandbox), where the kernel's
-    uid map is not the full identity map. bwrap could not start there anyway; the command is confined already."""
-    try:
-        with open("/proc/self/uid_map") as f:
-            return f.read().split() != ["0", "0", "4294967295"]
-    except OSError:
-        return True
+    uid map is not the full identity map. bwrap could not start there anyway; the command is confined already.
+    An unreadable map raises OSError, so that confine refuses rather than run the command unconfined."""
+    with open("/proc/self/uid_map") as f:
+        return f.read().split() != ["0", "0", "4294967295"]
 
 
 def run_confined(cfg, pol, policy_path, command, restore):
