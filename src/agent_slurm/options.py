@@ -66,7 +66,6 @@ gpus-per-task - req
 gres - req
 gres-flags - req
 hint - req
-immediate I opt
 job-name J req
 licenses L req
 mail-type - req
@@ -123,7 +122,6 @@ uid - req refuse
 SBATCH = _table(_COMMON + """
 array a req
 batch - req
-cluster - req
 error e req error
 export-file - req refuse
 hold H none
@@ -145,12 +143,13 @@ wrap - req wrap
 SRUN = _table(_COMMON + """
 cpu-bind - req
 exact - none
+immediate I opt
 jobid - req jobid
 kill-on-bad-exit K opt
 label l none
 mpi - req
 overlap - none
-pty - none
+pty - opt
 unbuffered u none
 wait W req
 bcast - opt refuse
@@ -195,7 +194,6 @@ verbose v none
 
 SCANCEL = _table("""
 batch b none
-cluster - req
 clusters M req
 full f none
 quiet Q none

@@ -240,7 +240,7 @@ class Broker:
 
     def _scancel(self, args, req, env):
         options, ids = parse_scancel(args)
-        clusters = last(options, "clusters") or last(options, "cluster")
+        clusters = last(options, "clusters")
         keep = []
         for job in ids:
             owner = self._owner(job_query_id(job), clusters)

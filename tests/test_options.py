@@ -1,10 +1,14 @@
 """Option allowlists and parsers (pure Python)."""
+import gzip
+import os
+import re
 import shlex
 
 import pytest
 
-from agent_slurm.options import (Refused, canonical, check_sacct, check_sacctmgr, check_scontrol, job_query_id,
-                                 parse_sbatch, parse_sbatch_header, parse_scancel, parse_srun, wrap_script)
+from agent_slurm.options import (NONE, OPT, REQ, SACCTMGR, SBATCH, SCANCEL, SCONTROL, SRUN, Refused, canonical,
+                                 check_sacct, check_sacctmgr, check_scontrol, job_query_id, parse_sbatch,
+                                 parse_sbatch_header, parse_scancel, parse_srun, wrap_script)
 
 
 def test_sbatch_forms_and_canonical_output():
@@ -140,3 +144,48 @@ def test_read_only_command_checks():
                         (check_sacct, ["-f", "/x"]), (check_sacct, ["-Xf/x"])]:
         with pytest.raises(Refused):
             check(argv)
+
+
+MAN_DIR = "/usr/share/man/man1"
+# An option's entry in the roff source of a SLURM man page: a ".TP" line, then a header such as
+# `\fB\-A\fR, \fB\-\-account\fR=<...>`, `\fB\-H, \-\-hold\fR`, `\fB\-\-no\-kill\fR[=off]` or
+# `\f3\-\-json\fP, \f3\-\-json\fP=\fIlist\fR` (bold is \fB or \f3, back to normal \fR or \fP).
+MAN_HEADER = re.compile(r"\\f[B3](?:\\-(\w)(?:\\f[RP])?, (?:\\f[B3])?)?\\-\\-([\w\\-]+?)\\f[RP]")
+
+
+def documented_options(command):
+    """{long name: (short letter or None, argument kind)} from the installed man page of `command`."""
+    path = os.path.join(MAN_DIR, f"{command}.1.gz")
+    if not os.path.exists(path):
+        pytest.skip(f"{path} is not installed")
+    with gzip.open(path, "rt", errors="replace") as f:
+        lines = f.read().splitlines()
+    found = {}
+    for prev, line in zip(lines, lines[1:]):
+        m = MAN_HEADER.match(line) if prev.startswith(".TP") else None
+        if not m:
+            continue
+        short, raw = m.groups()
+        # every form the header shows: `--json, --json=list` means the value is optional, like `--no-kill[=off]`
+        values = set(re.findall(r"\\-\\-" + re.escape(raw) + r"\\f[RP](\[?=)?", line))
+        kind = OPT if "[=" in values or values == {"", "="} else REQ if values == {"="} else NONE
+        # the first entry is the option's own; later ones describe values, as `--export=NONE` does
+        found.setdefault(raw.replace("\\-", "-"), (short, kind))
+    return found
+
+
+@pytest.mark.parametrize("command, table", [("sbatch", SBATCH), ("srun", SRUN), ("scancel", SCANCEL),
+                                            ("scontrol", SCONTROL), ("sacctmgr", SACCTMGR)])
+def test_tables_match_man_pages(command, table):
+    """Every option the broker passes on is one the installed SLURM documents, with the same short letter and
+    argument kind. Refused options are left out: they are refused whatever SLURM would make of them."""
+    documented = documented_options(command)
+    problems = []
+    for name, (short, kind, action) in sorted(table.items()):
+        if action == "refuse":
+            continue
+        if name not in documented:
+            problems.append(f"--{name}: not in man {command}")
+        elif documented[name] != (short, kind):
+            problems.append(f"--{name}: table has {(short, kind)}, man {command} has {documented[name]}")
+    assert not problems, "\n".join(problems)
