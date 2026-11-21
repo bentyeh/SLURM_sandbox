@@ -35,11 +35,12 @@ def test_policy_from_settings(setup):
     r = os.path.realpath
     assert pol["project_root"] == r(w.project)
     assert pol["writable"] == [r(w.project), r(w.root / "extra"), r(w.root / "shared")]
-    assert r(w.project / ".git" / "config") in pol["protect"]
-    assert r(w.project / ".git" / "hooks") in pol["protect"]
-    assert r(w.project / ".claude") in pol["protect"]
+    # protected names in the project root, existing or not, are placeholders: missing ones get an empty file
+    for name in (".git/config", ".git/hooks", ".claude", ".vscode"):
+        assert r(w.project / name) in pol["placeholders"]
     assert r(w.project / "bin") in pol["protect"]                 # denyWrite ./bin
-    assert str(w.project / ".vscode") in pol["placeholders"]      # missing: creation blocked
+    assert not any(p.startswith(r(w.project) + "/.") for p in pol["protect"])
+    assert r(w.root / "extra" / ".vscode") not in pol["placeholders"] + pol["protect"]   # missing, not the root
     assert "/run/munge" in pol["hide"] and str(w.root / "secret2") in pol["hide"]
     assert warnings == []
 

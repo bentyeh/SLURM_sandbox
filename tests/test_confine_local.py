@@ -39,9 +39,42 @@ def test_protected_paths(world, path):
     r = world.sh(f'echo pwned >> "{path}" || mkdir -p "{path}"')
     assert r.returncode != 0, r.stderr
     after = {p: p.read_bytes() for p in world.project.rglob("*") if p.is_file()}
-    assert {p: after[p] for p in before} == before
-    # bwrap leaves an empty placeholder for missing protected paths, as Claude's sandbox does; nothing else
-    assert all(after[p] == b"" for p in set(after) - set(before))
+    assert after == before   # no placeholder left behind either
+
+
+def wait_for(condition, timeout=20):
+    deadline = time.time() + timeout
+    while not condition():
+        assert time.time() < deadline, "timed out"
+        time.sleep(0.1)
+
+
+def test_placeholders_outlast_concurrent_runs(world):
+    """A confinement that ends must not remove placeholders another one still relies on: unlinking a mount point
+    detaches the mount in the other confinement, which could then create the name."""
+    mcp = world.project / ".mcp.json"
+    long = subprocess.Popen([world.confine_path, "sh", "-c", "sleep 4; echo pwned > .mcp.json"], cwd=world.project,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        wait_for(mcp.exists)
+        assert_ok(world.confine("true"))        # starts and ends while the long one runs
+        assert mcp.exists()
+        _, err = long.communicate(timeout=60)
+    finally:
+        long.kill()
+    assert long.returncode != 0 and "Read-only file system" in err, err
+    assert not mcp.exists()                     # removed once both have ended
+
+
+def test_placeholders_outlast_background_processes(world):
+    """A background process started inside can outlive confine; the placeholders stay until it has ended."""
+    mcp = world.project / ".mcp.json"
+    assert_ok(world.sh("(sleep 3; echo pwned > .mcp.json) >/dev/null 2>&1 &"))
+    assert mcp.exists() and mcp.read_bytes() == b""
+    time.sleep(4)
+    assert mcp.read_bytes() == b""              # the late write failed
+    assert_ok(world.confine("true"))            # the next run to end finds nothing live and cleans up
+    assert not mcp.exists()
 
 
 def test_hidden_paths(world):

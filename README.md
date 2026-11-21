@@ -47,7 +47,7 @@ The broker never judges the job's code; the code is made harmless by running ins
   - every `sandbox.filesystem.allowWrite` entry, from the managed, user (`~/.claude/settings.json`), project and local settings;
   - the installation's `shared_writable` folders (`/resnick/scratch/btyeh/claude`).
 - **Read-only inside those:**
-  - the paths Claude's sandbox always protects: `.git/hooks`, `.git/config`, `.claude`, `.vscode`, `.idea`, `.bashrc`, `.mcp.json`, `.gitmodules`, … Missing ones in the project folder get an empty placeholder, as Claude's sandbox does.
+  - the paths Claude's sandbox always protects: `.git/hooks`, `.git/config`, `.claude`, `.vscode`, `.idea`, `.bashrc`, `.mcp.json`, `.gitmodules`, … Missing ones in the project folder are occupied by an empty, read-only placeholder file. The placeholder is removed when the last confinement of the project ends, on whichever node.
   - every `denyWrite` entry.
 - **Hidden (empty):** `/run/munge`, `~/.ssh`, `~/.claude`, `~/.local/share/jupyter`, `~/.vscode-server`, `/run/user/<uid>`, and every `denyRead` entry.
 
@@ -159,6 +159,7 @@ The unit tests include a check of the option tables against the installed man pa
 | `src/confine` | Entry point (`#!/usr/bin/python3 -I`) |
 | `src/agent_slurm/launcher.py` | Starts the broker and bwrap; modes for jobs (`--job`) and steps (`--step`) |
 | `src/agent_slurm/policy.py` | Policy from Claude settings; bwrap arguments |
+| `src/agent_slurm/placeholders.py` | Creates the placeholder files and removes them after the last confinement of the project |
 | `src/agent_slurm/broker.py` | Checks and runs SLURM calls; job wrappers; `scancel` ownership |
 | `src/agent_slurm/options.py` | Option allowlists and parsers |
 | `src/agent_slurm/envclean.py` | Environment cleaning |

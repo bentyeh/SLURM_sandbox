@@ -8,7 +8,7 @@ import sys
 import tempfile
 import threading
 
-from . import config, policy
+from . import config, placeholders, policy
 from .broker import Broker
 
 USAGE = """\
@@ -38,8 +38,11 @@ def run_confined(cfg, pol, policy_path, command, restore):
         for sub in ("tmp", "cache", "conda_pkgs"):
             os.makedirs(os.path.join(pol["env_dir"], sub), exist_ok=True)
     os.makedirs(cfg.socket_dir, exist_ok=True)
+    registration = placeholders.Registration(cfg, pol)
+    registration.register()
     sockdir = tempfile.mkdtemp(prefix="agent-slurm-", dir=cfg.socket_dir)
     broker = Broker(cfg, pol, policy_path, os.path.join(sockdir, "s"))
+    reader = None
     try:
         broker.start()
         info_r, info_w = os.pipe()
@@ -56,6 +59,14 @@ def run_confined(cfg, pol, policy_path, command, restore):
                     child.update(json.loads(f.read() or "{}"))
                 except ValueError:
                     pass
+            mnt = child.get("mnt-namespace")
+            try:
+                if mnt:
+                    registration.set_namespace(f"mnt:[{mnt}]")
+                elif child.get("child-pid"):
+                    registration.set_namespace(os.readlink(f"/proc/{child['child-pid']}/ns/mnt"))
+            except OSError:
+                pass
 
         reader = threading.Thread(target=read_info, daemon=True)
         reader.start()
@@ -77,6 +88,12 @@ def run_confined(cfg, pol, policy_path, command, restore):
     finally:
         broker.stop()
         shutil.rmtree(sockdir, ignore_errors=True)
+        if reader is not None:
+            reader.join(5)   # the namespace must be recorded before release looks for it
+        try:
+            registration.release()
+        except OSError as e:
+            warn(f"placeholders left in place: {e}")
 
 
 def main(argv):

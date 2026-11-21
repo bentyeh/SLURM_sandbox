@@ -38,7 +38,7 @@ This walkthrough follows the code in the order it runs, from typing `confine CMD
 - **The guard** is the *broker*. It runs outside the confinement and can reach munge. The prisoner passes SLURM requests to the guard, which checks each one, rewrites it so the new job also starts confined, and makes the real call.
 - **Every compute node repeats this.** When a job starts there, it gets its own prisoner and guard, so the rule holds at every level.
 
-**What "hidden" means.** Inside the confinement, `/run/munge` is an **empty folder**; the real munge socket is still there for every other process on the machine. Linux lets a process have its own private view of the file system, and in that view a folder can be laid *on top of* an existing path, like taping a blank sheet over a page. bubblewrap, the sandboxing tool `confine` uses, lays an empty, read-only folder over `/run/munge` ([policy.py:229-231](src/agent_slurm/policy.py#L229-L231)). Step 4 explains the mechanism, and why the confined command can't peel the sheet off.
+**What "hidden" means.** Inside the confinement, `/run/munge` is an **empty folder**; the real munge socket is still there for every other process on the machine. Linux lets a process have its own private view of the file system, and in that view a folder can be laid *on top of* an existing path, like taping a blank sheet over a page. bubblewrap, the sandboxing tool `confine` uses, lays an empty, read-only folder over `/run/munge` ([policy.py:231-233](src/agent_slurm/policy.py#L231-L233)). Step 4 explains the mechanism, and why the confined command can't peel the sheet off.
 
 ---
 
@@ -66,7 +66,7 @@ sys.exit(launcher.main(sys.argv[1:]))
 
 ### `launcher.main`: four modes
 
-[launcher.py:82-114](src/agent_slurm/launcher.py#L82-L114) decides what to do from its arguments:
+[launcher.py:99-131](src/agent_slurm/launcher.py#L99-L131) decides what to do from its arguments:
 
 | Invocation | Who uses it | Covered in |
 |---|---|---|
@@ -113,9 +113,9 @@ A few constants matter in later steps ([config.py:11-18](src/agent_slurm/config.
 
 **Is `/tmp/.agent-slurm.sock` guaranteed unused? What if it is already in use?** It can't be: the path only exists inside a confinement, and each confinement gets its own empty `/tmp`.
 
-- bwrap gives the confined command a **fresh, empty, private `/tmp`** ([policy.py:214](src/agent_slurm/policy.py#L214)), new for every `confine` run.
-- The real socket lives outside, at `/dev/shm/agent-slurm-XXXXXX/s`. `mkdtemp` picks a random, unused folder name and makes it private (mode 0700), so two runs never collide ([launcher.py:40-42](src/agent_slurm/launcher.py#L40-L42)).
-- bwrap makes that real socket appear at `/tmp/.agent-slurm.sock` inside ([policy.py:234](src/agent_slurm/policy.py#L234)), the same "lay one path on top of another" mechanism as hiding.
+- bwrap gives the confined command a **fresh, empty, private `/tmp`** ([policy.py:216](src/agent_slurm/policy.py#L216)), new for every `confine` run.
+- The real socket lives outside, at `/dev/shm/agent-slurm-XXXXXX/s`. `mkdtemp` picks a random, unused folder name and makes it private (mode 0700), so two runs never collide ([launcher.py:40-44](src/agent_slurm/launcher.py#L40-L44)).
+- bwrap makes that real socket appear at `/tmp/.agent-slurm.sock` inside ([policy.py:236](src/agent_slurm/policy.py#L236)), the same "lay one path on top of another" mechanism as hiding.
 - Nothing is ever created at `/tmp/.agent-slurm.sock` on the real machine.
 
 If the confined command tries to delete or rename the socket path, it fails with "device busy," because something is mounted there. The worst it can do is cut off its own SLURM access.
@@ -134,7 +134,7 @@ If the confined command tries to delete or rename the socket path, it fails with
 
 ## Step 3: The policy: deciding what's writable
 
-**Goal:** produce one dict that says which folders the confined command may write, which spots inside those stay read-only, and which folders appear empty. All of this happens in [policy.build](src/agent_slurm/policy.py#L104-L143).
+**Goal:** produce one dict that says which folders the confined command may write, which spots inside those stay read-only, and which folders appear empty. All of this happens in [policy.build](src/agent_slurm/policy.py#L104-L145).
 
 **Where the rules come from.** You already tell Claude Code which folders it may write, in `.claude/settings.local.json` (`sandbox.filesystem.allowWrite`, etc.). `confine` reuses those settings rather than inventing a second config, so a job Claude launches can write exactly where Claude itself can.
 
@@ -165,15 +165,15 @@ Wildcard patterns like `*.log` are handled asymmetrically. When a rule can't be 
 | `.claude/` | the settings this policy comes from; the agent could widen its own permissions |
 | `.vscode/`, `.idea/`, `.mcp.json` | editor and tool configs that can launch programs |
 
-For each writable folder, the ones that exist go on the `protect` list ([policy.py:115-127](src/agent_slurm/policy.py#L115-L127)), along with your `denyWrite` entries.
+In the other writable folders, the ones that exist go on the `protect` list ([policy.py:115-129](src/agent_slurm/policy.py#L115-L129)), along with your `denyWrite` entries.
 
-**Placeholders.** If one of these is *missing* from the project root, the agent could simply create it (a new `.bashrc`, a new `.git/hooks/pre-commit`). So the missing names go on a `placeholders` list, and Step 4 puts an empty, unwritable file in each place. Claude's own sandbox does the same.
+**Placeholders.** If one of these is *missing* from the project root, the agent could simply create it (a new `.mcp.json`, a new `.git/hooks/pre-commit`). So in the project root, every protected name goes on a `placeholders` list, whether it exists or not. A name that exists now may be another confinement's placeholder, gone by the time a job uses this policy, so the list can't be decided here. Step 5 puts an empty, unwritable file at each missing one while the command runs, and removes it afterwards.
 
 **Hide:** `config.hide` (always including `/run/munge`) plus your `denyRead` entries.
 
 ### 3d. Validate: refuse dangerous policies
 
-[validate](src/agent_slurm/policy.py#L150-L164) refuses to start if a writable folder:
+[validate](src/agent_slurm/policy.py#L152-L166) refuses to start if a writable folder:
 
 - is `/`;
 - **contains** your home folder, the spool, the install folder or `~/.claude` (e.g. `allowWrite: ["/home"]`);
@@ -183,7 +183,7 @@ These places hold `confine`'s own code, its records and its rules, and the confi
 
 ### 3e. Save a snapshot
 
-[save](src/agent_slurm/policy.py#L184-L191) writes the dict as JSON to `spool/<project_key>/policies/<hash>.json`, read-only. A job submitted now may start an hour later on another machine, and it should run under *this* policy, not whatever the settings say by then. The job carries the snapshot's path (Step 8), and loading it runs `validate` again ([policy.load](src/agent_slurm/policy.py#L203-L206)).
+[save](src/agent_slurm/policy.py#L186-L193) writes the dict as JSON to `spool/<project_key>/policies/<hash>.json`, read-only. A job submitted now may start an hour later on another machine, and it should run under *this* policy, not whatever the settings say by then. The job carries the snapshot's path (Step 8), and loading it runs `validate` again ([policy.load](src/agent_slurm/policy.py#L205-L208)).
 
 `project_key` is the folder name plus a short hash of the full path, e.g. `myproj-3fa9c1e2b4d0`, so two projects both called `analysis` get separate spool folders.
 
@@ -194,8 +194,8 @@ The resulting dict looks like this (illustrative):
  "project_root": "/resnick/groups/.../myproj",
  "project_key": "myproj-3fa9c1e2b4d0",
  "writable":     ["/resnick/groups/.../myproj", "/resnick/scratch/btyeh/myproj", "/resnick/scratch/btyeh/claude"],
- "protect":      ["/resnick/groups/.../myproj/.claude", "/resnick/groups/.../myproj/.git/hooks", "..."],
- "placeholders": ["/resnick/groups/.../myproj/.bashrc", "..."],
+ "protect":      ["/resnick/scratch/btyeh/myproj/.git/config", "/resnick/groups/.../myproj/bin", "..."],
+ "placeholders": ["/resnick/groups/.../myproj/.bashrc", "/resnick/groups/.../myproj/.claude", "..."],
  "hide":         ["/run/munge", "/home/btyeh/.ssh", "/home/btyeh/.claude", "..."],
  "env_dir":      "/resnick/scratch/btyeh/claude/confine-env"
 }
@@ -216,7 +216,7 @@ crw-rw-rw-. 1 nobody nobody 1, 3  skills
 
 - The `c` with `1, 3` marks a character device with device numbers 1, 3, which is `/dev/null`. Each entry is `/dev/null` laid over a name that doesn't exist on disk, so the agent can't create it. Your real `.claude/` is untouched.
 - The mount table shows the placeholder is mounted `ro,nosuid,nodev`. `nodev` means device files there can't be opened, so opening fails with `EACCES` (`PermissionError`). That isn't the `FileNotFoundError` that [read_settings](src/agent_slurm/policy.py#L57-L60) treats as "absent," so `confine` stops with an error.
-- `confine`'s own placeholders work the same way (`--ro-bind /dev/null <path>`, [policy.py:227-228](src/agent_slurm/policy.py#L227-L228)): inside a `confine` run, a missing `.bashrc` in the project root looks present but can't be opened or written.
+- `confine`'s placeholders look different. A mount needs an existing file to sit on, so `confine` creates an empty file at each missing name, mounts it read-only on itself, and removes it once no confinement of the project is left (Step 5f). Inside a `confine` run, a missing `.bashrc` in the project root looks like an empty file that can't be written.
 
 This only matters inside Claude's sandbox; Claude is meant to call `confine` as an excluded command, which runs outside it.
 
@@ -224,8 +224,8 @@ This only matters inside Claude's sandbox; Claude is meant to call `confine` as 
 
 | Hash | Where | Input | Length kept |
 |---|---|---|---|
-| `project_key` | [project_key()](src/agent_slurm/policy.py#L146-L147) | the project's full real path | 48 bits, plus the folder name as a prefix |
-| snapshot filename | [save()](src/agent_slurm/policy.py#L184-L191) | the policy's JSON text | 64 bits |
+| `project_key` | [project_key()](src/agent_slurm/policy.py#L148-L149) | the project's full real path | 48 bits, plus the folder name as a prefix |
+| snapshot filename | [save()](src/agent_slurm/policy.py#L186-L193) | the policy's JSON text | 64 bits |
 
 Infinitely many paths map onto 2^48 prefixes, so some must share one (the pigeonhole principle). By accident, collisions are astronomically unlikely: two projects must have the same folder name *and* the same 48-bit prefix (about 10^-9 among 1,000 projects). If one did happen:
 
@@ -234,11 +234,11 @@ Infinitely many paths map onto 2^48 prefixes, so some must share one (the pigeon
 
 A deliberate collision would require the agent to create a folder with your other project's name and search about 2^48 (3x10^14) paths for a matching prefix, which is feasible on a GPU but buys little. Forging a snapshot name would take about 2^64 tries, and the agent can't choose the policy contents anyway, because it can't edit the settings.
 
-**Do `build` and `save` run every time `confine` is called? Do jobs share policies? What if the settings change between jobs?** Every `confine CMD` builds a fresh policy; the internal modes (`--job`, `--step`) only load a snapshot ([launcher.py:88-111](src/agent_slurm/launcher.py#L88-L111)).
+**Do `build` and `save` run every time `confine` is called? Do jobs share policies? What if the settings change between jobs?** Every `confine CMD` builds a fresh policy; the internal modes (`--job`, `--step`) only load a snapshot ([launcher.py:105-128](src/agent_slurm/launcher.py#L105-L128)).
 
 - **One `confine` call that submits many jobs** (e.g. `confine snakemake ...` submitting 50) makes one snapshot, and the broker writes the same path into every job's `job.json` ([broker.py:204](src/agent_slurm/broker.py#L204)).
 - **Many separate `confine` calls** each rebuild the policy. If nothing changed, the JSON is byte-for-byte identical, so it hashes to the same filename and `save` finds the file already there. Identical policies share one snapshot automatically.
-- **Jobs that submit jobs:** on the compute node, `confine --job` hands its broker the snapshot path it was given ([launcher.py:91-92](src/agent_slurm/launcher.py#L91-L92)), so every descendant inherits the original snapshot.
+- **Jobs that submit jobs:** on the compute node, `confine --job` hands its broker the snapshot path it was given ([launcher.py:108-109](src/agent_slurm/launcher.py#L108-L109)), so every descendant inherits the original snapshot.
 
 If the settings change:
 
@@ -259,7 +259,7 @@ A job runs under the policy in force **when it was submitted**, deliberately pin
 
 ## Step 4: Building the confinement: what bubblewrap does
 
-[policy.bwrap_args](src/agent_slurm/policy.py#L209-L239) turns the Step 3 dict into command-line arguments for **bubblewrap** (`bwrap`), the same tool Claude's own sandbox uses.
+[policy.bwrap_args](src/agent_slurm/policy.py#L211-L241) turns the Step 3 dict into command-line arguments for **bubblewrap** (`bwrap`), the same tool Claude's own sandbox uses.
 
 ### Three concepts
 
@@ -283,7 +283,7 @@ A job runs under the policy in force **when it was submitted**, deliberately pin
 | `--new-session` | Detach from your terminal (below) |
 | `--bind W W` for each writable folder | Lay a **read-write** sheet over the read-only base |
 | `--ro-bind P P` for each protected path | Lay a **read-only** sheet back over `.git/hooks`, `.claude`, ... |
-| `--ro-bind /dev/null P` for each missing placeholder | Occupy the name so it can't be created |
+| `--ro-bind P P` for each placeholder | Occupy the name so it can't be created (`run_confined` made the empty file at P first; Step 5f) |
 | `--tmpfs H --remount-ro H` for each hidden folder | Lay an **empty, read-only** sheet over `/run/munge`, `~/.ssh`, ... (a hidden *file* gets `/dev/null`) |
 | `--bind <real socket> /tmp/.agent-slurm.sock` | The broker's socket appears inside |
 | `--ro-bind stand-in /usr/bin/sbatch` (and the others) | `sbatch` etc. are now the stand-in (Step 6) |
@@ -296,7 +296,7 @@ path inside                          what you get                  layer
 /tmp                                 empty, writable               2
 /resnick/.../myproj                  writable                      3  (covers 1)
 /resnick/.../myproj/.git/hooks       read-only                     4  (covers 3)
-/resnick/.../myproj/.bashrc          /dev/null, unopenable         4  (placeholder)
+/resnick/.../myproj/.bashrc          empty, read-only              4  (placeholder)
 /run/munge                           empty, read-only              5  (covers 1)
 /usr/bin/sbatch                      the stand-in                  6  (covers 1)
 ```
@@ -315,7 +315,7 @@ A process attached to your terminal can use the `TIOCSTI` ioctl to **push fake k
 
 ### "Checked now, at start"
 
-`bwrap_args` looks at the file system as it is *right now* ([policy.py:219-233](src/agent_slurm/policy.py#L219-L233)). A writable folder that has since been deleted is skipped. A protected path that is a symlink is resolved, and its target is made read-only only if it lies inside a writable folder (if not, it is read-only already). This matters because a compute node may see things differently an hour later.
+`bwrap_args` looks at the file system as it is *right now* ([policy.py:221-235](src/agent_slurm/policy.py#L221-L235)). A writable folder that has since been deleted is skipped. A protected path that is a symlink is resolved, and its target is made read-only only if it lies inside a writable folder (if not, it is read-only already). This matters because a compute node may see things differently an hour later.
 
 Inside the bubble, `/proc/self/uid_map` no longer shows the identity mapping a normal process has; Step 5's Q&A explains how `confine` uses that to notice it is already confined.
 
@@ -337,7 +337,7 @@ Inside the bubble, `/proc/self/uid_map` no longer shows the identity mapping a n
 
 2. **Yes, only inside writable folders.** The base layer is `--ro-bind / /`, so creating a file anywhere else fails with "Read-only file system." The private `/tmp` is the one other writable spot, and it vanishes when the command ends.
 
-**Nuance A: protection covers only the top level of each writable folder.** The code checks `os.path.join(w, name)` for each writable folder `w` ([policy.py:116-127](src/agent_slurm/policy.py#L116-L127)). `myproj/sub/.bashrc` is unprotected but harmless, since nothing runs a `.bashrc` from a subfolder. **`myproj/sub/.git/hooks/` is also unprotected**: in a nested git repository or submodule, the agent can plant a hook that runs the next time you commit there outside the confinement. This is the one real gap in this class.
+**Nuance A: protection covers only the top level of each writable folder.** The code checks `os.path.join(w, name)` for each writable folder `w` ([policy.py:116-129](src/agent_slurm/policy.py#L116-L129)). `myproj/sub/.bashrc` is unprotected but harmless, since nothing runs a `.bashrc` from a subfolder. **`myproj/sub/.git/hooks/` is also unprotected**: in a nested git repository or submodule, the agent can plant a hook that runs the next time you commit there outside the confinement. This is the one real gap in this class.
 
 **Nuance B: placeholders only exist in the project root.** In other writable folders, such as scratch, a *missing* protected name isn't occupied, so the agent could create `/resnick/scratch/btyeh/claude/.git/config` or similar. That matters only if you later run git or another tool in that folder outside the confinement.
 
@@ -345,7 +345,7 @@ Inside the bubble, `/proc/self/uid_map` no longer shows the identity mapping a n
 
 ## Step 5: Starting the broker and launching the command
 
-For `confine CMD`, `main` does three things ([launcher.py:108-111](src/agent_slurm/launcher.py#L108-L111)): if already confined, run CMD directly (see the Q&A); build and save the policy (Step 3); and call **`run_confined`** ([launcher.py:36-79](src/agent_slurm/launcher.py#L36-L79)).
+For `confine CMD`, `main` does three things ([launcher.py:125-128](src/agent_slurm/launcher.py#L125-L128)): if already confined, run CMD directly (see the Q&A); build and save the policy (Step 3); and call **`run_confined`** ([launcher.py:36-96](src/agent_slurm/launcher.py#L36-L96)).
 
 ### What `run_confined` ends up with
 
@@ -374,7 +374,7 @@ broker.start()
 
 ### 5b. Learning the command's pid: `--info-fd`
 
-Signal forwarding (5d) needs the command's pid, and only bwrap knows it, because bwrap forks the command. **bwrap reports it**; `confine`'s code never writes to the pipe. `confine` only creates the pipe, tells bwrap which descriptor to write to, and reads the result ([launcher.py:45-61](src/agent_slurm/launcher.py#L45-L61)).
+Signal forwarding (5d) needs the command's pid, and only bwrap knows it, because bwrap forks the command. **bwrap reports it**; `confine`'s code never writes to the pipe. `confine` only creates the pipe, tells bwrap which descriptor to write to, and reads the result ([launcher.py:48-72](src/agent_slurm/launcher.py#L48-L72)).
 
 ```python
 info_r, info_w = os.pipe()
@@ -427,7 +427,7 @@ for name, value in policy.inner_env(pol, restore).items():
     args += ["--setenv", name, value]
 ```
 
-The command inherits `confine`'s environment, plus these from [inner_env](src/agent_slurm/policy.py#L242-L251):
+The command inherits `confine`'s environment, plus these from [inner_env](src/agent_slurm/policy.py#L244-L253):
 
 | Variable | Why |
 |---|---|
@@ -438,7 +438,7 @@ The command inherits `confine`'s environment, plus these from [inner_env](src/ag
 
 ### 5d. Signal forwarding
 
-`--new-session` detached CMD from your terminal, so **Ctrl-C** sends SIGINT to *`confine`*, not to CMD. The same happens when SLURM cancels a job and sends SIGTERM. `confine` passes the signal on itself ([launcher.py:63-74](src/agent_slurm/launcher.py#L63-L74)):
+`--new-session` detached CMD from your terminal, so **Ctrl-C** sends SIGINT to *`confine`*, not to CMD. The same happens when SLURM cancels a job and sends SIGTERM. `confine` passes the signal on itself ([launcher.py:74-85](src/agent_slurm/launcher.py#L74-L85)):
 
 ```python
 def forward(signum, frame):
@@ -464,7 +464,18 @@ finally:
 
 - Python reports "killed by signal N" as `-N`; `128 + N` is the shell convention, so a SIGTERM'd command makes `confine` exit with 143.
 - [broker.stop](src/agent_slurm/broker.py#L109-L113) closes the listening socket, so the `accept()` loop errors out and its thread ends; then the socket folder is deleted. Remaining broker threads are daemon threads and die with the process.
-- **`--die-with-parent`** covers the reverse case: if `confine` itself is killed, even by an uncatchable SIGKILL, the kernel kills CMD too. A confined process can never outlive its broker.
+- **`--die-with-parent`** covers the reverse case: if `confine` itself is killed, even by an uncatchable SIGKILL, the kernel kills CMD too. It reaches only CMD itself: a background process CMD left running (`sleep 60 &`) outlives `confine`, still confined but without a broker, so it can't reach SLURM. In a job, SLURM kills such processes when the job ends.
+
+### 5f. Placeholder files
+
+Step 3 listed the protected names in the project root. For each one that is missing, `run_confined` creates an empty, read-only file before starting bwrap, and removes it when the confinement is over ([placeholders.py](src/agent_slurm/placeholders.py)). bwrap could create the file itself, since a mount needs something to sit on, but it would never remove it, and the files would pile up in your project.
+
+The removal is the delicate part. Unlinking a file that is a mount point in *another* mount namespace detaches the mount there. So if one `confine` removed `.mcp.json` while a second one, or a Snakemake job on a compute node, still ran in the same project, the second one's command could then create `.mcp.json`. Hence:
+
+- **Register.** Every confinement writes a registration to `spool/<project_key>/placeholders/users/` before it starts. The registration records the host, boot, `confine`'s pid and start time, and, once bwrap reports it, the confinement's mount namespace. It then creates the missing files and records their inode numbers in `created.json`.
+- **Release.** When the confinement ends, it removes its registration. If no live registration is left, it removes the recorded files: only those still empty, regular, and with the same inode, so a file you created in the meantime stays.
+- **Live** means `confine` still runs, or some process is still in the confinement's mount namespace (the background `sleep` above). A confinement that finds such a process keeps its registration. Registrations from other nodes can't be checked and count as live. A crashed node leaves the files in place until a later confinement of the project ends on that node.
+- **Lock.** Registering and releasing happen under a POSIX lock (`fcntl.lockf`) on `placeholders/lock`. On the NFS home, such locks are kept by the server, so they work across nodes. If the lock can't be taken, `confine` refuses to run, because an unregistered confinement could lose its placeholders to another one's release.
 
 ### Q&A
 
@@ -496,7 +507,7 @@ def already_confined():
         return f.read().split() != ["0", "0", "4294967295"]
 ```
 
-When it returns true, `main` skips building a confinement and `execvp`s the command ([launcher.py:108-109](src/agent_slurm/launcher.py#L108-L109)), replacing the current process (`exec` without `fork`):
+When it returns true, `main` skips building a confinement and `execvp`s the command ([launcher.py:125-126](src/agent_slurm/launcher.py#L125-L126)), replacing the current process (`exec` without `fork`):
 
 - **bwrap couldn't start anyway**, because `--disable-userns` forbids creating new user namespaces inside a `confine`.
 - **It's harmless**: the command stays in whatever confinement it was in, with munge still hidden and the stand-ins in place. So `confine` can appear in job scripts or Snakemake rules that might run either inside or outside a confinement.
@@ -518,7 +529,7 @@ The signal turns into a **hard kill**: bwrap dies, and `--die-with-parent` makes
 
 | Window | Duration | What a signal does |
 |---|---|---|
-| A: `Popen` until `signal.signal(...)` runs ([launcher.py:49-74](src/agent_slurm/launcher.py#L49-L74)) | microseconds | Hits `confine` with no handler. SIGINT raises `KeyboardInterrupt`; SIGTERM, SIGHUP and SIGUSR1/2 kill `confine` outright, skipping `finally` (the `/dev/shm` socket folder is left behind) |
+| A: `Popen` until `signal.signal(...)` runs ([launcher.py:52-85](src/agent_slurm/launcher.py#L52-L85)) | microseconds | Hits `confine` with no handler. SIGINT raises `KeyboardInterrupt`; SIGTERM, SIGHUP and SIGUSR1/2 kill `confine` outright, skipping `finally` (the `/dev/shm` socket folder is left behind) |
 | B: handlers installed, pid not yet reported | milliseconds | Goes to bwrap, so the command is SIGKILLed |
 
 The fix is to install the handlers *before* `Popen` and queue signals until the pid is known; it is sketched under [Possible extensions](#possible-extensions). Today's behavior is harsh but safe, and both windows are tiny.
@@ -771,7 +782,7 @@ On the compute node, SLURM's helper process (`slurmstepd`) opens `--output` **as
     └── slurm-4812.out       SLURM's own log (created by SLURM later)
 ```
 
-`0500` is owner read and execute; `0400` is read-only. Each file is written with [write_atomic](src/agent_slurm/policy.py#L176-L181) (write a temporary file, then `os.replace` it into place), so a reader never sees a half-written file.
+`0500` is owner read and execute; `0400` is read-only. Each file is written with [write_atomic](src/agent_slurm/policy.py#L178-L183) (write a temporary file, then `os.replace` it into place), so a reader never sees a half-written file.
 
 `job.json` ([broker.py:203-213](src/agent_slurm/broker.py#L203-L213)):
 
@@ -851,7 +862,7 @@ Between SLURM starting the job and bwrap creating the confinement, three program
 
 ### 9b. `confine --job` loads only from the spool
 
-[launcher.py:88-93](src/agent_slurm/launcher.py#L88-L93):
+[launcher.py:105-110](src/agent_slurm/launcher.py#L105-L110):
 
 ```python
 jobdir = os.path.realpath(argv[1])
@@ -860,7 +871,7 @@ pol = policy.load(cfg, job["policy"])                     # also in the spool; v
 return run_confined(cfg, pol, job["policy"], [cfg.python, "-I", cfg.jobentry, jobdir], job["env_restore"])
 ```
 
-Anyone can type `confine --job /some/folder`, including an agent asking you to approve it. Without the check, the agent could write its own `job.json` pointing at its own "policy" with `writable: ["/"]`. [load_spool_file](src/agent_slurm/policy.py#L194-L200) refuses any file whose real path is outside the spool, and `policy.load` applies the same rule to the snapshot and re-runs `validate`. A job can only run under a policy `confine` itself saved.
+Anyone can type `confine --job /some/folder`, including an agent asking you to approve it. Without the check, the agent could write its own `job.json` pointing at its own "policy" with `writable: ["/"]`. [load_spool_file](src/agent_slurm/policy.py#L196-L202) refuses any file whose real path is outside the spool, and `policy.load` applies the same rule to the snapshot and re-runs `validate`. A job can only run under a policy `confine` itself saved.
 
 `run_confined` is the same function as in Step 5, so this node gets its own socket folder in *its* `/dev/shm`, its own broker given the **same policy path** (so jobs this job submits inherit it), and a confinement whose environment includes `env_restore`. Your `LD_LIBRARY_PATH` and friends are back, now only inside; the `SLURM_*` variables SLURM set pass through too.
 
@@ -932,7 +943,7 @@ agent asked for:   srun -n 4 --mem=2G my_tool x
 broker runs:       /usr/bin/srun --ntasks=4 --mem=2G /home/btyeh/bin/confine --step <stepfile> -- my_tool x
 ```
 
-SLURM launches `confine` on each node instead of `my_tool`. There, [`confine --step`](src/agent_slurm/launcher.py#L94-L100) loads the step file and policy (both must be in the spool, as in Step 9), builds a confinement with its own broker, and runs `my_tool` inside. No `jobentry.py` is needed: `srun` carries the tasks' stdio back to itself, and from there into the caller's fds.
+SLURM launches `confine` on each node instead of `my_tool`. There, [`confine --step`](src/agent_slurm/launcher.py#L111-L117) loads the step file and policy (both must be in the spool, as in Step 9), builds a confinement with its own broker, and runs `my_tool` inside. No `jobentry.py` is needed: `srun` carries the tasks' stdio back to itself, and from there into the caller's fds.
 
 Differences from `sbatch`:
 

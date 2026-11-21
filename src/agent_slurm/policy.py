@@ -121,10 +121,12 @@ def build(cfg, cwd, warn):
         elif os.path.lexists(git):
             candidates.append(git)
         for c in candidates:
-            if os.path.lexists(c):
+            if w == root:
+                # Existing or not: one that exists now may be another confinement's placeholder, gone by the
+                # time this policy is used. Missing ones get an empty file while confined (placeholders.py).
+                placeholders.append(c)
+            elif os.path.lexists(c):
                 protect.append(c)
-            elif w == root:
-                placeholders.append(c)   # as Claude's sandbox does: block creating it
     for p in entries["denyWrite"]:
         if os.path.lexists(p):
             protect.append(p)
